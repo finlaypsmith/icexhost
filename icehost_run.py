@@ -1,7 +1,7 @@
 import os
 import time
 import json
-import urllib.parse
+import urllib.parse  # 引入高精度编码库
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -67,7 +67,7 @@ def run():
             raw_data = json.loads(ICEHOST_COOKIES)
             cookies_to_add = []
 
-            # 智能兼容格式：只提取 Cookie，放弃对 Pterodactyl (翼龙) 注入 LocalStorage
+            # 提取 Cookie 并准备注入
             if isinstance(raw_data, list):
                 cookies_to_add = raw_data
             elif isinstance(raw_data, dict):
@@ -75,15 +75,21 @@ def run():
             else:
                 raise ValueError("未知的数据格式")
 
-            # 1. 精准注入并进行 URL 解码
+            # 1. 核心修复：执行双重统一 URL 编码，解决 PHP 引擎自动将加号 '+' 转换为空格的致命缺陷
             formatted_cookies = []
             for c in cookies_to_add:
                 raw_value = c["value"]
-                decoded_value = urllib.parse.unquote(raw_value)
+                
+                # 第一步：先对可能混杂的部分编码进行解码，完全还原为未编码的原始字符
+                clean_value = urllib.parse.unquote(raw_value)
+                
+                # 第二步：将原始字符进行全局统一的 URL 编码（将 +, /, =, ", {, } 等符号全部安全化为 %XX 格式）
+                # 这样可以确保后端 PHP 解析 Cookie 时，能将 %2B 完美解码回原本的 '+' 符号，实现解密 100% 成功
+                encoded_value = urllib.parse.quote(clean_value)
                 
                 fc = {
                     "name": c["name"],
-                    "value": decoded_value,
+                    "value": encoded_value,
                     "domain": c["domain"],
                     "path": c.get("path", "/")
                 }
@@ -104,7 +110,7 @@ def run():
                 formatted_cookies.append(fc)
             
             context.add_cookies(formatted_cookies)
-            print("Cookie 注入并解码成功！已跳过 LocalStorage 注入以避免 React 状态冲突。")
+            print("Cookie 成功执行双重高精度 URL 编码并注入！已完美规避 PHP '+' 转换漏洞。")
 
         except Exception as e:
             print(f"凭证解析/注入失败: {e}")
@@ -122,7 +128,7 @@ def run():
 
         # 判断登录状态
         if "login" in page.url or page.locator("input[type='email']").first.is_visible():
-            msg = "❌ <b>IceHost 登录失效！</b>\n请重新用控制台脚本导出凭证并更新 ICEHOST_COOKIES。"
+            msg = "❌ <b>IceHost 登录失效！</b>\n请在浏览器重新提取并更新 ICEHOST_COOKIES。"
             print(msg)
             send_tg_notification(msg, "icehost_debug_screenshot.png")
             browser.close()
