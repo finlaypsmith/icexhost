@@ -1,7 +1,7 @@
 import os
 import time
 import json
-import urllib.parse  # 引入高精度编码库
+import urllib.parse
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -75,16 +75,15 @@ def run():
             else:
                 raise ValueError("未知的数据格式")
 
-            # 1. 核心修复：执行双重统一 URL 编码，解决 PHP 引擎自动将加号 '+' 转换为空格的致命缺陷
+            # 1. 注入并进行高精度统一 URL 编码
             formatted_cookies = []
             for c in cookies_to_add:
                 raw_value = c["value"]
                 
-                # 第一步：先对可能混杂的部分编码进行解码，完全还原为未编码的原始字符
+                # 第一步：先解码，还原为未编码的原始字符
                 clean_value = urllib.parse.unquote(raw_value)
                 
-                # 第二步：将原始字符进行全局统一的 URL 编码（将 +, /, =, ", {, } 等符号全部安全化为 %XX 格式）
-                # 这样可以确保后端 PHP 解析 Cookie 时，能将 %2B 完美解码回原本的 '+' 符号，实现解密 100% 成功
+                # 第二步：将原始字符进行全局统一的 URL 编码，避免 PHP 引擎加号漏洞
                 encoded_value = urllib.parse.quote(clean_value)
                 
                 fc = {
@@ -119,6 +118,20 @@ def run():
             return
 
         page = context.new_page()
+
+        # ⚡ 核心修改：全局网络流量拦截与指纹清洗 (Bypass Client Hints Bot Detection)
+        def handle_route(route):
+            headers = {**route.request.headers}
+            # 强行将底层的 Client Hints 请求头重写为标准真人 Chrome 指纹，彻底抹除无头浏览器特征
+            headers["sec-ch-ua"] = '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"'
+            headers["sec-ch-ua-mobile"] = "?0"
+            headers["sec-ch-ua-platform"] = '"Windows"'
+            headers["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            route.continue_(headers=headers)
+
+        # 拦截所有类型的网络流量并执行清洗
+        page.route("**/*", handle_route)
+
         print(f"正在访问 IceHost 面板: {SERVER_URL}")
         page.goto(SERVER_URL)
         page.wait_for_timeout(10000)
