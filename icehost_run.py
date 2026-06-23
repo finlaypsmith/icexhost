@@ -1,7 +1,7 @@
 import os
 import time
 import json
-import urllib.parse # 引入 URL 解码库
+import urllib.parse
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -45,10 +45,24 @@ def run():
         return
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # 核心修改 1：在启动参数中加入 --disable-blink-features=AutomationControlled
+        # 彻底抹除 Chromium 浏览器的自动化特征
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
         )
+        
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            viewport={"width": 1280, "height": 720}
+        )
+
+        # 核心修改 2：向页面注入高权限过检测脚本，将 navigator.webdriver 强制伪装为 undefined（真实人类浏览器）
+        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         try:
             raw_data = json.loads(ICEHOST_COOKIES)
@@ -65,11 +79,10 @@ def run():
             else:
                 raise ValueError("未知的数据格式")
 
-            # 1. 注入 Cookies
+            # 1. 注入并解码 Cookies
             formatted_cookies = []
             for c in cookies_to_add:
                 raw_value = c["value"]
-                # 核心修复：对 cookie 的 value 进行 URL 解码，还原 %3D 为 =，防止 Playwright 进行二次编码导致 403 报错
                 decoded_value = urllib.parse.unquote(raw_value)
                 
                 fc = {
@@ -130,7 +143,7 @@ def run():
             browser.close()
             return
 
-        # 3. 检测是否已经达到了 6 小时限制（波兰语特征词）
+        # 3. 核心逻辑：自动检测是否已经达到了 6 小时限制（波兰语特征词）
         page_text = page.locator("body").text_content() or ""
         if "Nie możesz przedłużyć" in page_text or "niedawno" in page_text:
             print("检测到限制提示：当前服务器已续期满6小时上限。结束本次运行。")
