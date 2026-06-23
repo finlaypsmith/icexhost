@@ -56,7 +56,7 @@ def run():
         )
         
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 720}
         )
 
@@ -119,17 +119,15 @@ def run():
 
         page = context.new_page()
 
-        # ⚡ 核心修改：全局网络流量拦截与指纹清洗 (Bypass Client Hints Bot Detection)
+        # 全局网络流量拦截与指纹清洗
         def handle_route(route):
             headers = {**route.request.headers}
-            # 强行将底层的 Client Hints 请求头重写为标准真人 Chrome 指纹，彻底抹除无头浏览器特征
             headers["sec-ch-ua"] = '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"'
             headers["sec-ch-ua-mobile"] = "?0"
             headers["sec-ch-ua-platform"] = '"Windows"'
-            headers["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            headers["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             route.continue_(headers=headers)
 
-        # 拦截所有类型的网络流量并执行清洗
         page.route("**/*", handle_route)
 
         print(f"正在访问 IceHost 面板: {SERVER_URL}")
@@ -147,10 +145,18 @@ def run():
             browser.close()
             return
 
-        # 3. 检测是否已经达到了 6 小时限制（波兰语特征词）
-        page_text = page.locator("body").text_content() or ""
-        if "Nie możesz przedłużyć" in page_text or "niedawno" in page_text:
-            print("检测到限制提示：当前服务器已续期满6小时上限。结束本次运行。")
+        # 3. 核心探测：高精度多重波兰语关键词探测
+        keywords = ["Nie możesz przedłużyć", "niedawno to zrobiłeś", "kolejne 6 godziny"]
+        is_limited = False
+        
+        for kw in keywords:
+            if page.locator(f"text={kw}").first.is_visible():
+                is_limited = True
+                break
+        
+        if is_limited:
+            # 页面一加载就已经是限制状态：说明未到可续期时间，直接安静退出，绝不发消息打扰你
+            print("检测到红框限制提示：说明未到可续期时间。结束本次运行（不发送 Telegram 提醒）。")
             browser.close()
             return
 
@@ -158,7 +164,7 @@ def run():
         renew_btn = page.locator("a:has-text('DODAJ 6 GODZIN'), button:has-text('DODAJ 6 GODZIN'), [class*='blue']:has-text('DODAJ 6 GODZIN')").first
         
         if renew_btn.is_visible() and renew_btn.is_enabled():
-            print("找到续期按钮，正在点击...")
+            print("未检测到限制提示，找到续期按钮，正在点击...")
             renew_btn.click()
             page.wait_for_timeout(10000) # 等待 10 秒
             
@@ -166,13 +172,20 @@ def run():
             page.screenshot(path="icehost_debug_screenshot.png")
             
             # 二次检测结果
-            new_page_text = page.locator("body").text_content() or ""
-            if "Nie możesz przedłużyć" in new_page_text or "niedawno" in new_page_text:
-                msg = "⚡ <b>IceHost 服务器续期成功！</b>\n已成功延长 6 小时效期（已达最大上限）。"
-                print(msg)
-                send_tg_notification(msg, "icehost_debug_screenshot.png")
+            is_now_limited = False
+            for kw in keywords:
+                if page.locator(f"text={kw}").first.is_visible():
+                    is_now_limited = True
+                    break
+                    
+            if is_now_limited:
+                # 核心修改：如果点击后出现了红框提示，说明其实“未到可续期时间”（续期被服务器拒接，未成功延长效期）
+                # 此时不发送 Telegram 消息，保持安静，直接退出。
+                print("点击后弹出了红框提示：说明未到可续期时间（续期未成功）。结束本次运行（不发送 Telegram 提醒）。")
             else:
-                msg = "ℹ️ <b>IceHost 续期指令已发送</b>\n按钮已点击，请检查下方截图确认是否成功。"
+                # 如果点击后页面没有出现任何红框报错，说明“真正续期成功，服务器效期被成功延长”
+                # 此时才向 Telegram 发送成功的通知和截图！
+                msg = "⚡ <b>IceHost 服务器续期成功！</b>\n服务器已真正成功延长 6 小时有效期。"
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
         else:
