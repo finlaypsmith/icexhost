@@ -61,7 +61,7 @@ def check_is_cf_page(page):
         return False
 
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：通过绝对定位句柄执行官方原生点击+坐标微调盲点物理重击"""
+    """智能页面加载函数：通过未隔离的父级容器获取绝对物理坐标并实施多点精准点击"""
     print(f"正在访问页面: {url}")
     page.goto(url)
     
@@ -78,58 +78,53 @@ def load_page_with_cf_bypass(page, url):
 
     if turnstile_frame:
         print("⚡ 成功通过底层接口穿透闭合影子 DOM 捕获到 Cloudflare 验证盾 iframe！")
-        page.wait_for_timeout(4000) # 给予 4 秒缓冲时间确保其完全渲染完毕
+        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
         
-        try:
-            # 1. 穿透闭合影子树，获取该 iframe 元素在当前 Linux 屏幕上的真实绝对句柄
-            iframe_handle = turnstile_frame.frame_element()
-            
-            # 【第一招（最高优先级）：直接使用 Playwright 官方原生 element.click() 物理重击】
-            # 该方法由浏览器底层驱动，会自动对焦窗口、模拟最合规的硬件点击，穿透力极强
-            print("正在尝试执行官方原生 element.click() 点击验证盾...")
-            iframe_handle.click()
-            page.wait_for_timeout(8000) # 等待 8 秒观察
+        box = None
+        # 核心突破：通过主页面上未被隔离和跨域限制的父级容器（如 #turnstile-wrapper、.cf-turnstile 等 div）获取物理边界框！
+        for selector in ["#turnstile-wrapper", ".cf-turnstile", "div:has(iframe)", "iframe"]:
+            try:
+                temp_box = page.locator(selector).first.bounding_box()
+                if temp_box and temp_box["width"] > 50 and temp_box["height"] > 20:
+                    box = temp_box
+                    print(f"✓ 成功通过选择器 '{selector}' 获取到验证盾物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
+                    break
+            except Exception:
+                pass
+                
+        if not box:
+            # 最终经验保底：如果全部读取失败，则使用 1280x720 视口下的标准经验坐标
+            print("⚠️ 无法获取验证盾边界定位框，启用标准视口固定经验坐标...")
+            box = {"x": 490.0, "y": 375.3, "width": 300.0, "height": 65.0}
 
-            # 二次核对是否已通关（盯着大标题看，绝不发生假性判定）
+        # 准备高精度点击
+        base_x = box["x"]
+        base_y = box["y"]
+        h_center = box["height"] / 2
+        
+        # 精调网格点击点（针对复选框所在的左侧位置 30px ~ 45px 范围进行多点微调）
+        points_to_click = [
+            (base_x + 35, base_y + h_center),      # 1. 理论复选框正中心
+            (base_x + 40, base_y + h_center),      # 2. 稍微偏右 5 像素
+            (base_x + 30, base_y + h_center),      # 3. 稍微偏左 5 像素
+            (base_x + 35, base_y + h_center - 5),  # 4. 微调偏上 5 像素
+            (base_x + 35, base_y + h_center + 5),  # 5. 微调偏下 5 像素
+            (base_x + box["width"] / 2, base_y + h_center) # 6. 验证码容器正中心点（保底）
+        ]
+        
+        for x, y in points_to_click:
             if not check_is_cf_page(page):
-                print("✓ 恭喜！使用官方原生元素点击法成功通过验证！")
-                return
-
-            # 如果第一招失败，说明点击被安全沙箱阻断，启动【第二招（高精度坐标微调网格点击）】
-            box = iframe_handle.bounding_box()
-            if box:
-                print(f"原生点击被拦截，已获取到高精物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
-                base_x = box["x"]
-                base_y = box["y"]
-                h_center = box["height"] / 2
-                
-                # 围绕复选框中心点微调
-                points_to_click = [
-                    (base_x + 35, base_y + h_center),      # 1. 理论复选框正中心
-                    (base_x + 35, base_y + h_center - 6),  # 2. 稍微偏上一点
-                    (base_x + 35, base_y + h_center + 6),  # 3. 稍微偏下一点
-                    (base_x + 45, base_y + h_center),      # 4. 稍微偏右一点
-                    (base_x + 25, base_y + h_center),      # 5. 稍微偏左一点
-                    (base_x + box["width"] / 2, base_y + h_center) # 6. 容器正中心（保底）
-                ]
-                
-                for x, y in points_to_click:
-                    if not check_is_cf_page(page):
-                        break
-                    print(f"正在模拟真人平滑移动至 ({x:.1f}, {y:.1f}) 并执行物理点击...")
-                    page.mouse.move(x, y, steps=10)
-                    page.wait_for_timeout(400)
-                    page.mouse.click(x, y)
-                    page.wait_for_timeout(6000) # 延长每次微调点击后的等待判定时间为 6 秒
-                    
-                    if not check_is_cf_page(page):
-                        print("✓ 恭喜！使用物理坐标微调点击法成功通过验证！")
-                        break
-            else:
-                print("未获取到验证盾的边界定位框。")
-        except Exception as e:
-            print(f"执行物理定位点击过程中发生异常: {e}")
+                break
+            print(f"正在模拟真人平滑移动至 ({x:.1f}, {y:.1f}) 并执行物理点击...")
+            page.mouse.move(x, y, steps=10) # 模拟真人 10 步平滑移动轨迹
+            page.wait_for_timeout(400)
+            page.mouse.click(x, y)
+            page.wait_for_timeout(6000) # 每次点击后等待 6 秒观察
             
+            if not check_is_cf_page(page):
+                print("✓ 恭喜！验证盾已成功解开，退出点击循环。")
+                break
+                
         # 成功通过后，额外多等待 8 秒完成页面 React 数据加载
         print("正在等待页面 React 异步数据完全加载...")
         page.wait_for_timeout(8000)
@@ -217,21 +212,6 @@ def run():
             return
 
         page = context.new_page()
-
-        # ⚡ 核心修改：向页面注入高精防检测混淆
-        if _USE_STEALTH_CLASS is True:
-            try:
-                stealth = Stealth()
-                stealth.apply_stealth_sync(page)
-                print("✓ 成功应用新版 playwright-stealth 混淆指纹！")
-            except Exception as se:
-                print(f"应用新版 stealth 失败，跳过: {se}")
-        elif _USE_STEALTH_CLASS is False:
-            try:
-                stealth_sync(page)
-                print("✓ 成功应用旧版 playwright-stealth 混淆指纹！")
-            except Exception as se:
-                print(f"应用旧版 stealth 失败，跳过: {se}")
 
         # 全局网络流量拦截与指纹清洗
         def handle_route(route):
