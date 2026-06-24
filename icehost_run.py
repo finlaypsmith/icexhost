@@ -4,6 +4,8 @@ import json
 import urllib.parse
 import requests
 from playwright.sync_api import sync_playwright
+# 引入高阶混淆包
+from playwright_stealth import stealth_sync
 
 SERVER_URL = os.getenv("ICEHOST_SERVER_URL")
 ICEHOST_COOKIES = os.getenv("ICEHOST_COOKIES")
@@ -45,7 +47,6 @@ def run():
         return
 
     with sync_playwright() as p:
-        # 启用过检测参数，抹除自动化特征
         browser = p.chromium.launch(
             headless=True,
             args=[
@@ -60,14 +61,11 @@ def run():
             viewport={"width": 1280, "height": 720}
         )
 
-        # 隐藏自动化控制指纹
-        context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-
         try:
             raw_data = json.loads(ICEHOST_COOKIES)
             cookies_to_add = []
 
-            # 提取 Cookie 并准备注入
+            # 提取 Cookie
             if isinstance(raw_data, list):
                 cookies_to_add = raw_data
             elif isinstance(raw_data, dict):
@@ -75,20 +73,15 @@ def run():
             else:
                 raise ValueError("未知的数据格式")
 
-            # 1. 注入并进行高精度统一 URL 编码
+            # 1. 精准注入并进行 URL 解码
             formatted_cookies = []
             for c in cookies_to_add:
                 raw_value = c["value"]
-                
-                # 第一步：先解码，还原为未编码的原始字符
-                clean_value = urllib.parse.unquote(raw_value)
-                
-                # 第二步：将原始字符进行全局统一的 URL 编码，避免 PHP 引擎加号漏洞
-                encoded_value = urllib.parse.quote(clean_value)
+                decoded_value = urllib.parse.unquote(raw_value)
                 
                 fc = {
                     "name": c["name"],
-                    "value": encoded_value,
+                    "value": decoded_value,
                     "domain": c["domain"],
                     "path": c.get("path", "/")
                 }
@@ -118,6 +111,9 @@ def run():
             return
 
         page = context.new_page()
+
+        # ⚡ 核心修改：向页面注入高精防检测混淆（让 Cloudflare 的人机验证在后台自动通过）
+        stealth_sync(page)
 
         # 全局网络流量拦截与指纹清洗
         def handle_route(route):
@@ -155,7 +151,6 @@ def run():
                 break
         
         if is_limited:
-            # 页面一加载就已经是限制状态：说明未到可续期时间，直接安静退出，绝不发消息打扰你
             print("检测到红框限制提示：说明未到可续期时间。结束本次运行（不发送 Telegram 提醒）。")
             browser.close()
             return
@@ -179,12 +174,8 @@ def run():
                     break
                     
             if is_now_limited:
-                # 核心修改：如果点击后出现了红框提示，说明其实“未到可续期时间”（续期被服务器拒接，未成功延长效期）
-                # 此时不发送 Telegram 消息，保持安静，直接退出。
                 print("点击后弹出了红框提示：说明未到可续期时间（续期未成功）。结束本次运行（不发送 Telegram 提醒）。")
             else:
-                # 如果点击后页面没有出现任何红框报错，说明“真正续期成功，服务器效期被成功延长”
-                # 此时才向 Telegram 发送成功的通知和截图！
                 msg = "⚡ <b>IceHost 服务器续期成功！</b>\n服务器已真正成功延长 6 小时有效期。"
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
