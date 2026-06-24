@@ -51,31 +51,27 @@ def send_tg_notification(message, photo_path=None):
         except Exception as e:
             print(f"发送 TG 截图异常: {e}")
 
-def check_is_cf_page(page):
-    """通过检测底层 frame 列表中是否还存在 Cloudflare 域名，来 100% 精准判定是否仍处于人机验证页"""
+def check_is_successfully_loaded(page):
+    """通过检测控制面板独有的元素（如波兰语的控制台、服务器、有效期），100% 精准判定是否真正进入了控制台"""
     try:
-        # 只要子 frame 列表中还存在 challenge-platform 或是 challenges 关键字，就说明验证盾还在
-        return any(
-            "challenge-platform" in f.url or "challenges.cloudflare.com" in f.url 
-            for f in page.frames
-        )
+        konsola_visible = page.locator("text=Konsola").first.is_visible()
+        waznosc_visible = page.locator("text=DATA WAŻNOŚCI").first.is_visible()
+        serwery_visible = page.locator("text=Serwery").first.is_visible()
+        return konsola_visible or waznosc_visible or serwery_visible
     except Exception:
-        return True
+        return False
 
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：通过底层列表捕获 Frame 绕过影子 DOM，获取绝对坐标并执行模拟真人按压点击"""
+    """智能页面加载函数：通过控制面板独有元素验证，配合高精度物理按压和严密判定进行通关"""
     print(f"正在访问页面: {url}")
     page.goto(url)
     
-    # 1. 核心回归（同 Run #35）：直接通过 page.frames 轮询 15 秒搜寻子框架
-    # 这样可以 100% 避开任何最外层 HTML 元素的可见性检测缺陷
+    # 轮询 15 秒，直接在浏览器底层搜寻除主框架以外的任何子框架（验证盾）
     turnstile_frame = None
     for i in range(15):
-        for frame in page.frames:
-            if "challenge-platform" in frame.url or "challenges.cloudflare.com" in frame.url:
-                turnstile_frame = frame
-                break
-        if turnstile_frame:
+        child_frames = [f for f in page.frames if f != page.main_frame]
+        if len(child_frames) > 0:
+            turnstile_frame = child_frames[0]
             break
         page.wait_for_timeout(1000)
 
@@ -84,18 +80,19 @@ def load_page_with_cf_bypass(page, url):
         page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
         
         box = None
-        try:
-            # 2. 核心回归（同 Run #35）：利用 frame_element().bounding_box() 拿取绝对坐标
-            # 这在我们之前的测试里已经被证实能 100% 完美计算出 (490, 375.3) 的精确位置
-            iframe_handle = turnstile_frame.frame_element()
-            box = iframe_handle.bounding_box()
-            if box:
-                print(f"✓ 成功获取验证盾绝对物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
-        except Exception as e:
-            print(f"通过 frame_element 获取定位框异常: {e}")
+        # 通过主页面上未被隔离和跨域限制的父级容器获取物理边界框
+        for selector in ["#turnstile-wrapper", ".cf-turnstile", "div:has(iframe)", "iframe"]:
+            try:
+                temp_box = page.locator(selector).first.bounding_box()
+                if temp_box and temp_box["width"] > 50 and temp_box["height"] > 20:
+                    box = temp_box
+                    print(f"✓ 成功获取到验证盾物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
+                    break
+            except Exception:
+                pass
                 
         if not box:
-            print("⚠️ 无法获取验证盾边界定位框，启用标准视口固定经验坐标保底...")
+            print("⚠️ 无法获取验证盾边界定位框，启用 1280x720 视口标准物理经验坐标保底...")
             box = {"x": 490.0, "y": 375.3, "width": 300.0, "height": 65.0}
 
         base_x = box["x"]
@@ -113,15 +110,15 @@ def load_page_with_cf_bypass(page, url):
         ]
         
         for x, y in points_to_click:
-            # 每次点击前，严密探测验证盾是否依然存在。如果已经不存在（通关了），直接退出
-            if not check_is_cf_page(page):
-                print("✓ 验证盾已在浏览器底层彻底消失，成功通过验证！")
+            # 核心改进：每次点击前，直接探测控制面板独有元素。如果进去了，立即通关退出！
+            if check_is_successfully_loaded(page):
+                print("✓ 恭喜！控制面板特有元素已出现，验证成功通过！")
                 break
                 
             print(f"正在模拟真人平滑移动至 ({x:.1f}, {y:.1f}) 并执行物理按压点击...")
             try:
                 page.mouse.move(x, y, steps=15)
-                page.wait_for_timeout(random.randint(400, 800)) # 模拟人类悬停
+                page.wait_for_timeout(random.randint(400, 800)) # 模拟人类悬停观察
                 page.mouse.down()
                 page.wait_for_timeout(random.randint(100, 180)) # 模拟真人点击按压延迟
                 page.mouse.up()
@@ -129,16 +126,16 @@ def load_page_with_cf_bypass(page, url):
                 # 点击后等待 6 秒观察状态
                 page.wait_for_timeout(6000)
                 
-                if not check_is_cf_page(page):
-                    print("✓ 页面加载完毕，验证成功通过！")
+                if check_is_successfully_loaded(page):
+                    print("✓ 成功进入控制面板，验证通过！")
                     break
                 else:
-                    print("验证盾依然存在，准备尝试下一个微调坐标点...")
+                    print("控制面板尚未加载，说明验证盾依然存在，准备尝试下一个微调坐标点...")
             except Exception as e:
                 print(f"点击坐标 ({x:.1f}, {y:.1f}) 遇到问题: {e}")
                 
         # 点击结束后，再次进行最终状态核对
-        if not check_is_cf_page(page):
+        if check_is_successfully_loaded(page):
             print("✓ 恭喜！Cloudflare 验证已安全通关。")
         else:
             print("⚠️ 尝试了所有坐标，仍未成功穿透验证盾。")
