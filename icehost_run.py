@@ -50,55 +50,66 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：利用物理坐标网格盲点点击法穿透 Cloudflare 的人机验证"""
+    """智能页面加载函数：通过 frame_element 获取验证码在 Linux 主机上的真实实时物理坐标并实施精准点击"""
     print(f"正在访问页面: {url}")
     page.goto(url)
-    page.wait_for_timeout(8000) # 给予 8 秒让页面完成基础加载
+    
+    # 轮询 15 秒，直接通过浏览器底层 Frame 列表搜寻验证盾 iframe
+    turnstile_frame = None
+    for i in range(15):
+        for frame in page.frames:
+            if "challenge-platform" in frame.url or "challenges.cloudflare.com" in frame.url:
+                turnstile_frame = frame
+                break
+        if turnstile_frame:
+            break
+        page.wait_for_timeout(1000)
 
-    # 1. 检查是否处于 Cloudflare 验证页面（Connection Challenge）
-    # 该标题属于外层 DOM 节点，完全未被隔离，可以 100% 稳定识别
-    is_cf_page = (
-        "Challenge" in page.title() or 
-        page.locator("h1:has-text('Challenge')").first.is_visible() or
-        page.locator("text=Connection Challenge").first.is_visible() or
-        page.locator("text=Verify you are human").first.is_visible()
-    )
-
-    if is_cf_page:
-        print("⚡ 检测到处于 Cloudflare Connection Challenge 验证页面！")
-        print("正在启动终极盲点坐标网格点击法 (Bypass Closed Shadow DOM)...")
+    if turnstile_frame:
+        print("⚡ 成功通过底层接口穿透闭合影子 DOM 捕获到 Cloudflare 验证盾 iframe！")
+        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
         
-        # 在 1280x720 视口下，Cloudflare 验证盒子处于屏幕正中央
-        # 整个盒子宽 300px，高 65px，中心点约为 (640, 405)，左侧复选框（Checkbox）中心大约在 (530, 405)
-        # 我们设计一个高精度网格点击点列表，对该区域实施地毯式模拟物理点击，确保 100% 击中
-        points_to_click = [
-            (530, 405),  # 1. 理论复选框正中心
-            (530, 395),  # 2. 复选框偏上
-            (530, 415),  # 3. 复选框偏下
-            (515, 405),  # 4. 复选框偏左
-            (545, 405),  # 5. 常规验证区域中左
-            (640, 405)   # 6. 验证盒正中心点（作为保底）
-        ]
-        
-        for x, y in points_to_click:
-            try:
-                print(f"正在模拟真人鼠标平滑移动至 ({x}, {y}) 并执行物理点击...")
-                page.mouse.move(x, y, steps=10) # 模拟真人 10 步平滑移动轨迹
-                page.wait_for_timeout(300)
-                page.mouse.click(x, y)
-                page.wait_for_timeout(1500) # 等待 1.5 秒看是否有响应
+        try:
+            # 核心突破：通过 frame_element() 获取该 iframe 元素在当前 Linux 屏幕上的真实实时边界框 (bounding box)
+            # 这能 100% 避开因为系统字体、排版偏移导致的坐标错位问题！
+            iframe_handle = turnstile_frame.frame_element()
+            box = iframe_handle.bounding_box()
+            
+            if box:
+                print(f"✓ 成功获取验证盾绝对物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, 宽度={box['width']:.1f}, 高度={box['height']:.1f}")
                 
-                # 每点击完一个点，检查验证是否通过（如果标题变了或者挑战 H1 消失了，说明成功通过）
-                current_cf_page = (
-                    "Challenge" in page.title() or 
-                    page.locator("h1:has-text('Challenge')").first.is_visible()
-                )
-                if not current_cf_page:
-                    print("✓ 恭喜！验证已成功解开，退出点击循环。")
-                    break
-            except Exception as e:
-                print(f"点击坐标 ({x}, {y}) 遇到问题，跳过: {e}")
+                # 以获取到的实时坐标为基准，在复选框位置周围实施高精度物理点击
+                # 验证码盒子通常宽 300px，高度 65px，复选框中心大约在左侧 35px 处
+                base_x = box["x"]
+                base_y = box["y"]
+                h_center = box["height"] / 2
                 
+                points_to_click = [
+                    (base_x + 35, base_y + h_center),      # 1. 理论复选框正中心
+                    (base_x + 35, base_y + h_center - 5),  # 2. 微调偏上
+                    (base_x + 35, base_y + h_center + 5),  # 3. 微调偏下
+                    (base_x + 45, base_y + h_center),      # 4. 微调偏右
+                    (base_x + 25, base_y + h_center),      # 5. 微调偏左
+                    (base_x + box["width"] / 2, base_y + h_center) # 6. 验证码容器正中心点（保底）
+                ]
+                
+                for x, y in points_to_click:
+                    print(f"正在模拟真人平滑移动至 ({x:.1f}, {y:.1f}) 并执行物理点击...")
+                    page.mouse.move(x, y, steps=10) # 模拟真人 10 步平滑移动轨迹
+                    page.wait_for_timeout(300)
+                    page.mouse.click(x, y)
+                    page.wait_for_timeout(2000) # 每次点击后等待 2 秒看是否有响应
+                    
+                    # 检查验证盾 iframe 是否已经从浏览器框架列表中消失（消失代表验证通过）
+                    cf_still_exists = any("challenge-platform" in f.url or "challenges.cloudflare.com" in f.url for f in page.frames)
+                    if not cf_still_exists:
+                        print("✓ 恭喜！验证盾已成功解开，退出点击循环。")
+                        break
+            else:
+                print("未获取到验证盾的边界定位框。")
+        except Exception as e:
+            print(f"执行物理定位点击过程中发生异常: {e}")
+            
         # 成功通过后，额外多等待 8 秒完成页面 React 数据加载
         print("正在等待页面 React 异步数据完全加载...")
         page.wait_for_timeout(8000)
