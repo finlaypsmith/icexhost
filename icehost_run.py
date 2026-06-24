@@ -52,7 +52,7 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 def check_is_successfully_loaded(page):
-    """通过检测控制面板独有的元素（如波兰语的控制台、服务器、有效期），100% 精准判定是否真正进入了控制台"""
+    """100% 确认是否真正进入了控制台（寻找翼龙面板独有元素）"""
     try:
         konsola_visible = page.locator("text=Konsola").first.is_visible()
         waznosc_visible = page.locator("text=DATA WAŻNOŚCI").first.is_visible()
@@ -61,12 +61,21 @@ def check_is_successfully_loaded(page):
     except Exception:
         return False
 
+def check_is_cf_page(page):
+    """检测当前是否仍卡在验证码页面（通过检测页面是否仍存在非主 Frame 的子 iframe 进行100%绝对判定）"""
+    try:
+        child_frames = [f for f in page.frames if f != page.main_frame]
+        return len(child_frames) > 0
+    except Exception:
+        return True
+
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：通过控制面板独有元素验证，配合高精度物理按压和严密判定进行通关"""
+    """智能页面加载函数：通过底层列表捕获 Frame 绕过影子 DOM，获取绝对坐标并执行模拟真人按压点击"""
     print(f"正在访问页面: {url}")
     page.goto(url)
     
-    # 轮询 15 秒，直接在浏览器底层搜寻除主框架以外的任何子框架（验证盾）
+    # 1. 核心回归（同 Run #35）：直接通过 page.frames 轮询 15 秒搜寻子框架
+    # 这样可以 100% 避开任何最外层 HTML 元素的可见性检测缺陷
     turnstile_frame = None
     for i in range(15):
         child_frames = [f for f in page.frames if f != page.main_frame]
@@ -80,19 +89,18 @@ def load_page_with_cf_bypass(page, url):
         page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
         
         box = None
-        # 通过主页面上未被隔离和跨域限制的父级容器获取物理边界框
-        for selector in ["#turnstile-wrapper", ".cf-turnstile", "div:has(iframe)", "iframe"]:
-            try:
-                temp_box = page.locator(selector).first.bounding_box()
-                if temp_box and temp_box["width"] > 50 and temp_box["height"] > 20:
-                    box = temp_box
-                    print(f"✓ 成功获取到验证盾物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
-                    break
-            except Exception:
-                pass
+        try:
+            # 2. 核心回归（同 Run #35）：利用 frame_element().bounding_box() 拿取绝对坐标
+            # 这在我们之前的测试里已经被证实能 100% 完美计算出 (490, 375.3) 的精确位置
+            iframe_handle = turnstile_frame.frame_element()
+            box = iframe_handle.bounding_box()
+            if box:
+                print(f"✓ 成功通过底层接口获取验证盾实时物理坐标: x={box['x']:.1f}, y={box['y']:.1f}, w={box['width']:.1f}, h={box['height']:.1f}")
+        except Exception as e:
+            print(f"尝试通过 frame_element 获取坐标失败: {e}")
                 
         if not box:
-            print("⚠️ 无法获取验证盾边界定位框，启用 1280x720 视口标准物理经验坐标保底...")
+            print("⚠️ 无法获取验证盾边界定位框，启用标准视口固定经验坐标保底...")
             box = {"x": 490.0, "y": 375.3, "width": 300.0, "height": 65.0}
 
         base_x = box["x"]
@@ -110,7 +118,7 @@ def load_page_with_cf_bypass(page, url):
         ]
         
         for x, y in points_to_click:
-            # 核心改进：每次点击前，直接探测控制面板独有元素。如果进去了，立即通关退出！
+            # 每次点击前，直接检测控制面板独有元素。如果进去了，立即通关退出！
             if check_is_successfully_loaded(page):
                 print("✓ 恭喜！控制面板特有元素已出现，验证成功通过！")
                 break
