@@ -17,9 +17,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install playwright requests
-          # 安装 firefox 浏览器替代 chromium
-          playwright install firefox
+          # 核心改变：安装 seleniumbase 代替 playwright
+          pip install seleniumbase requests
 
       - name: Set up WARP
         uses: fscarmen/warp-on-actions@v1.1
