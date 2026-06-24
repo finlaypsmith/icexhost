@@ -91,7 +91,7 @@ def run():
         # 3. 核心过盾：自动寻找并执行系统级物理点击过 Cloudflare Turnstile 验证盾
         sb.save_screenshot("icehost_debug_screenshot.png")
         try:
-            print("正在检测并调用系统级 PyAutoGUI 驱动，物理点击 Cloudflare 人机验证盾...")
+            print("正在检测并调用系统级 PyAutoGUI 驱动，物理点击 Cloudflare 人机验证码...")
             # 在虚拟桌面上定位验证框并模拟发送系统硬件级点击事件
             sb.uc_gui_click_captcha()
             sb.sleep(10) # 给予 10 秒跳转缓冲
@@ -118,12 +118,12 @@ def run():
             return
 
         # 6. 安全寻找并点击续期按钮
-        # 改用强大的标签无关纯文本定位器
-        renew_btn_selector = "text=DODAJ 6 GODZIN"
+        # 核心修改：改用标准的 XPath 深度文本扫瞄定位，100% 无视标签和框架限制
+        renew_btn_selector = "//*[contains(., 'DODAJ 6 GODZIN')]"
         
         try:
             print("正在等待续期按钮加载...")
-            # 核心改进：阻塞式主动等待，给予最长 15 秒的时间让 React 完成渲染
+            # 阻塞式主动等待，给予最长 15 秒的时间让 React 完成渲染并捕获
             sb.wait_for_element_visible(renew_btn_selector, timeout=15)
             print("未检测到限制提示，找到续期按钮，正在点击...")
             sb.click(renew_btn_selector)
@@ -148,7 +148,7 @@ def run():
         except Exception as e:
             print(f"未在页面中找到可用的蓝色续期按钮（可能已被续满，或按钮标签发生变动）: {e}")
 
-        browser.close()
+        # 核心修改：这里彻底删掉了多余的 browser.close()，让 seleniumbase 在 with 块结束时自动清理
 
 if __name__ == "__main__":
     run()
