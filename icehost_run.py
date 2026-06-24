@@ -3,6 +3,7 @@ import time
 import json
 import urllib.parse
 import random
+import math
 import requests
 from playwright.sync_api import sync_playwright
 
@@ -52,7 +53,7 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 def check_is_successfully_loaded(page):
-    """通过检测控制面板独有的元素（如波兰语的控制台、服务器、有效期），100% 精准判定是否真正进入了控制台"""
+    """100% 确认是否真正进入了控制台（寻找翼龙面板独有元素）"""
     try:
         konsola_visible = page.locator("text=Konsola").first.is_visible()
         waznosc_visible = page.locator("text=DATA WAŻNOŚCI").first.is_visible()
@@ -62,20 +63,46 @@ def check_is_successfully_loaded(page):
         return False
 
 def check_is_cf_page(page):
-    """检测当前是否仍卡在验证码页面（通过检测页面是否仍存在非主 Frame 的子 iframe 进行 100% 绝对判定）"""
+    """检测当前是否仍卡在验证码页面（通过检测页面是否仍存在非主 Frame 的子 iframe 进行100%绝对判定）"""
     try:
         child_frames = [f for f in page.frames if f != page.main_frame]
         return len(child_frames) > 0
     except Exception:
         return True
 
+def move_mouse_humanlike(page, to_x, to_y):
+    """使用二次贝塞尔曲线公式模拟真人的鼠标轨迹移动，彻底绕过 WAF 轨迹检测"""
+    try:
+        # 获取当前鼠标位置，如果刚开始，在边缘位置随机生成一个起点
+        from_x = random.randint(10, 100)
+        from_y = random.randint(10, 100)
+        
+        steps = random.randint(15, 25) # 移动步数
+        
+        # 随机生成一个控制点，使轨迹呈现出自然的弧度 (Curve)
+        control_x = (from_x + to_x) / 2 + random.randint(-100, 100)
+        control_y = (from_y + to_y) / 2 + random.randint(-100, 100)
+        
+        for i in range(steps + 1):
+            t = i / steps
+            # 二次贝塞尔曲线公式: B(t) = (1-t)^2 * P0 + 2*t*(1-t) * P1 + t^2 * P2
+            x = (1 - t)**2 * from_x + 2 * t * (1 - t) * control_x + t**2 * to_x
+            y = (1 - t)**2 * from_y + 2 * t * (1 - t) * control_y + t**2 * to_y
+            
+            page.mouse.move(x, y)
+            # 随机加减速延迟，模拟真人操作
+            page.wait_for_timeout(random.randint(10, 25))
+    except Exception as e:
+        print(f"平滑移动鼠标遇到异常，退回到直接移动: {e}")
+        page.mouse.move(to_x, to_y)
+
 def load_page_with_cf_bypass(page, url):
     """智能页面加载函数：通过底层列表捕获 Frame 绕过影子 DOM，获取绝对坐标并执行模拟真人按压点击"""
     print(f"正在访问页面: {url}")
     page.goto(url)
-    
+    page.wait_for_timeout(6000) # 给予 6 秒让页面加载
+
     # 1. 核心回归（同 Run #35）：直接通过 page.frames 轮询 15 秒搜寻子框架
-    # 这样可以 100% 避开任何最外层 HTML 元素的可见性检测缺陷
     turnstile_frame = None
     for i in range(15):
         child_frames = [f for f in page.frames if f != page.main_frame]
@@ -86,12 +113,16 @@ def load_page_with_cf_bypass(page, url):
 
     if turnstile_frame:
         print("⚡ 成功通过底层接口穿透闭合影子 DOM 捕获到 Cloudflare 验证盾 iframe！")
-        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
+        page.wait_for_timeout(3000)
         
+        # 激活焦点：先在左上角空白处安全点击一下，确保浏览器窗口获得绝对焦点
+        print("正在物理点击页面空白处以强制激活浏览器窗口焦点...")
+        page.mouse.click(random.randint(10, 50), random.randint(10, 50))
+        page.wait_for_timeout(500)
+
         box = None
         try:
             # 2. 核心回归（同 Run #35）：利用 frame_element().bounding_box() 拿取绝对坐标
-            # 这在我们之前的测试里已经被证实能 100% 完美计算出 (490.0, 375.3) 的精确位置
             iframe_handle = turnstile_frame.frame_element()
             box = iframe_handle.bounding_box()
             if box:
@@ -118,17 +149,23 @@ def load_page_with_cf_bypass(page, url):
         ]
         
         for x, y in points_to_click:
-            # 核心改进：每次点击前，直接检测控制面板独有元素。如果进去了，立即通关退出！
+            # 每次点击前，直接检测控制面板独有元素。如果进去了，立即通关退出！
             if check_is_successfully_loaded(page):
                 print("✓ 恭喜！控制面板特有元素已出现，验证成功通过！")
                 break
                 
             print(f"正在模拟真人平滑移动至 ({x:.1f}, {y:.1f}) 并执行物理按压点击...")
             try:
-                page.mouse.move(x, y, steps=15)
-                page.wait_for_timeout(random.randint(400, 800)) # 模拟人类悬停观察
+                # 使用二次贝塞尔曲线平滑移动鼠标到指定目标，绕过 WAF 轨迹算法检测
+                move_mouse_humanlike(page, x, y)
+                
+                # 模拟人类悬停观察
+                page.wait_for_timeout(random.randint(400, 800))
+                # 鼠标按下
                 page.mouse.down()
-                page.wait_for_timeout(random.randint(100, 180)) # 模拟真人点击按压延迟
+                # 模拟真实的物理按压延时（避开 0ms 机器检测）
+                page.wait_for_timeout(random.randint(100, 180))
+                # 鼠标松开
                 page.mouse.up()
                 
                 # 点击后等待 6 秒观察状态
