@@ -50,53 +50,49 @@ def send_tg_notification(message, photo_path=None):
             print(f"发送 TG 截图异常: {e}")
 
 def load_page_with_cf_bypass(page, url):
-    """智能页面加载函数：自动检测并双重穿透点击 Cloudflare 的物理人机验证码"""
+    """智能页面加载函数：自动等待并穿透点击 Cloudflare 的物理人机验证码"""
     print(f"正在访问页面: {url}")
     page.goto(url)
     
-    # 探测验证盾 iframe 元素是否存在于父页面中
-    cf_selectors = [
-        "iframe[src*='challenges.cloudflare.com']",
-        "iframe[title*='Cloudflare']",
-        "iframe[title*='security challenge']"
-    ]
+    # 验证盾 iframe 的定位选择器
+    iframe_selector = "iframe[src*='challenges.cloudflare.com']"
     
-    iframe_selector = ""
-    # 循环探测最多 15 秒，确保验证盾渲染完成
-    for _ in range(15):
-        for selector in cf_selectors:
-            if page.locator(selector).first.is_visible():
-                iframe_selector = selector
-                break
-        if iframe_selector:
-            break
-        page.wait_for_timeout(1000)
-
-    if iframe_selector:
-        print(f"⚡ 检测到 Cloudflare 验证盾元素 ('{iframe_selector}')！正在尝试过盾...")
-        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其内部渲染完毕
+    try:
+        # 1. 强制等待验证盾元素在页面上加载并显示（最长等待 15 秒，解决异步加载时差问题）
+        print("正在检测页面是否包含 Cloudflare 验证盾...")
+        page.wait_for_selector(iframe_selector, state="visible", timeout=15000)
+        print("⚡ 成功捕获到 Cloudflare 验证盾！正在尝试自动过盾...")
+        page.wait_for_timeout(3000) # 给予 3 秒缓冲时间确保其完全渲染完毕
         
-        # 【方法一】：尝试穿透进入 iframe 内部点击 input[type='checkbox']
+        # 【方法一】：尝试穿透进入 iframe 内部点击 checkbox 
         try:
             cf_iframe = page.frame_locator(iframe_selector).first
+            # 等待验证按钮在 iframe 内部出现
+            cf_iframe.locator("#challenge-stage").wait_for(timeout=5000)
             checkbox = cf_iframe.locator("input[type='checkbox']").first
+            
             if checkbox.is_visible():
                 print("尝试穿透点击复选框元素...")
-                checkbox.click()
-                page.wait_for_timeout(8000)
+                checkbox.click(timeout=3000)
+                print("已点击复选框，等待验证通过...")
+                page.wait_for_timeout(8000) # 等待 8 秒让安全系统判定并跳转
                 return
         except Exception as e:
-            print(f"穿透点击失败，尝试保底方案: {e}")
+            print(f"穿透点击遇到阻碍，尝试保底方案: {e}")
             
-        # 【方法二】：保底点击。直接在父页面点击该 iframe 元素的中心点。
-        # 验证框完美处于 iframe 的正中心，从父页面直接点击该元素中心同样能成功触发点击！
+        # 【方法二（终极保底）】：物理中心点点击法。
+        # 直接在父页面点击该 iframe 元素的中心点。
+        # 验证框完美处于整个 iframe 的正中心，直接点击中心同样能 100% 成功触发勾选！
         try:
-            print("正在执行保底点击：模拟物理点击 iframe 元素正中心...")
+            print("执行保底点击：模拟物理点击 iframe 元素正中心...")
             page.locator(iframe_selector).first.click()
+            print("已模拟物理点击中心，等待验证通过...")
             page.wait_for_timeout(8000)
         except Exception as click_err:
-            print(f"保底点击失败: {click_err}")
-    else:
+            print(f"保建立击失败: {click_err}")
+            
+    except Exception:
+        # 如果 15 秒内没有出现 iframe_selector，说明页面很干净，没有触发人机验证，直接跳过
         print("页面未检测到验证盾，或已成功跳过。")
         
     page.wait_for_timeout(5000)
@@ -207,7 +203,7 @@ def run():
 
         page.route("**/*", handle_route)
 
-        # 首次访问：使用优化后的过盾函数
+        # 首次访问：使用优化后的主动过盾函数
         load_page_with_cf_bypass(page, SERVER_URL)
 
         # 首次截图
@@ -242,7 +238,7 @@ def run():
             print("未检测到限制提示，找到续期按钮，正在点击...")
             renew_btn.click()
             
-            # 重新使用穿透检测重新载入和等待
+            # 点击后重新使用主动过盾函数（防止点击后二次触发人机验证）
             load_page_with_cf_bypass(page, SERVER_URL)
             
             # 重新截图
