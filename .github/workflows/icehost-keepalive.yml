@@ -34,6 +34,19 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python icehost_run.py
 
+      - name: Update ICEHOST_COOKIES secret
+        if: always()
+        env:
+          # 需自建 Fine-grained PAT，仅授权本仓库 Secrets: Read and write，存为 GH_PAT
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -f new_cookies.json ]; then
+            gh secret set ICEHOST_COOKIES < new_cookies.json
+            echo "✅ 已用最新 Cookie 覆盖更新 ICEHOST_COOKIES secret。"
+          else
+            echo "ℹ️ 未生成 new_cookies.json（登录可能失效或异常），跳过更新。"
+          fi
+
       - name: Upload Debug Screenshot
         if: always()
         uses: actions/upload-artifact@v4

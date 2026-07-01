@@ -9,6 +9,39 @@ from seleniumbase import SB
 SERVER_URL = os.getenv("ICEHOST_SERVER_URL")
 ICEHOST_COOKIES = os.getenv("ICEHOST_COOKIES")
 
+def export_cookies(sb):
+    """导出浏览器当前最新的 Cookie 到 new_cookies.json，供工作流回写 Secret。
+
+    只导出 dash.icehost.pl 相关域，格式与 ICEHOST_COOKIES 保持一致。
+    """
+    try:
+        raw = sb.get_cookies()  # Selenium 格式：当前域下的全部 Cookie
+        out = []
+        for c in raw:
+            item = {
+                "name": c.get("name"),
+                "value": c.get("value"),
+                "domain": c.get("domain"),
+                "path": c.get("path", "/"),
+                # Selenium 用 expiry 表示过期时间戳，缺省表示会话级 -1
+                "expires": c.get("expiry", -1),
+                "httpOnly": c.get("httpOnly", False),
+                "secure": c.get("secure", True),
+            }
+            if c.get("sameSite"):
+                item["sameSite"] = c["sameSite"]
+            out.append(item)
+
+        if not out:
+            print("未获取到任何 Cookie，跳过导出。")
+            return
+
+        with open("new_cookies.json", "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        print(f"已导出 {len(out)} 条最新 Cookie 到 new_cookies.json。")
+    except Exception as e:
+        print(f"导出 Cookie 失败: {e}")
+
 def send_tg_notification(message, photo_path=None):
     """发送结果和截图至 Telegram"""
     token = os.getenv("TG_BOT_TOKEN")
@@ -107,6 +140,9 @@ def run():
             print(msg)
             send_tg_notification(msg, "icehost_debug_screenshot.png")
             return
+
+        # 登录态有效：立即导出当前最新 Cookie，供工作流回写 Secret 保活
+        export_cookies(sb)
 
         # 5. 判定波兰语红框限制
         page_source = sb.get_page_source()
