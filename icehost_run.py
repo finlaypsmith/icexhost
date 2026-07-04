@@ -52,25 +52,49 @@ def run():
         sb.uc_open_with_reconnect(SERVER_URL, reconnect_time=8)
         sb.sleep(5)
 
-        # 2. 注入 Cookies
+        # 2. 注入 Cookies（已升级：智能兼容 JSON 或纯文本格式）
         if ICEHOST_COOKIES:
             try:
-                raw_data = json.loads(ICEHOST_COOKIES)
                 cookies_to_add = []
-                if isinstance(raw_data, list):
-                    cookies_to_add = raw_data
-                elif isinstance(raw_data, dict):
-                    cookies_to_add = raw_data.get("cookies", [])
+                raw_cookies_str = ICEHOST_COOKIES.strip()
 
+                # 尝试一：如果 Secret 填的是标准的 JSON 格式
+                try:
+                    raw_data = json.loads(raw_cookies_str)
+                    if isinstance(raw_data, list):
+                        cookies_to_add = raw_data
+                    elif isinstance(raw_data, dict):
+                        cookies_to_add = raw_data.get("cookies", [])
+                    print("检测到 JSON 格式 Cookie，正在解析...")
+                
+                # 尝试二：如果解析失败，说明填的是纯文本（icehostpl_session=... 或直接是加密串）
+                except json.JSONDecodeError:
+                    print("检测到纯文本 Cookie 格式，正在自动提取并生成标准字段...")
+                    
+                    # 提取真正的 Token 字符串值
+                    token_value = raw_cookies_str
+                    if "icehostpl_session=" in token_value:
+                        token_value = token_value.split("icehostpl_session=")[1].split(";")[0]
+                    elif "XSRF-TOKEN=" in token_value:
+                        token_value = token_value.split("XSRF-TOKEN=")[1].split(";")[0]
+                    
+                    token_value = token_value.strip()
+
+                    # 最稳妥策略：自动为 Selenium 生成两个核心的 Cookie 字典
+                    cookies_to_add = [
+                        {"name": "icehostpl_session", "value": token_value, "domain": "dash.icehost.pl"},
+                        {"name": "XSRF-TOKEN", "value": token_value, "domain": "dash.icehost.pl"}
+                    ]
+
+                # 统一执行转换与注入
                 for c in cookies_to_add:
                     raw_value = c["value"]
                     decoded_value = urllib.parse.unquote(raw_value)
                     
-                    # 转换格式为 Selenium 格式
                     cookie_dict = {
                         "name": c["name"],
                         "value": decoded_value,
-                        "domain": c["domain"],
+                        "domain": c.get("domain", "dash.icehost.pl"),
                         "path": c.get("path", "/"),
                         "secure": c.get("secure", True)
                     }
@@ -80,6 +104,7 @@ def run():
                             cookie_dict["sameSite"] = ss.capitalize()
                     
                     sb.add_cookie(cookie_dict)
+                
                 print("Cookie 成功注入！")
                 
                 # 重新刷新加载，应用 Cookie
@@ -126,7 +151,7 @@ def run():
             print("未检测到限制提示，找到续期按钮，正在点击...")
             sb.click(renew_btn_selector)
             
-            # ⚡ 核心改进：点击后，在不刷新页面的前提下，先等待 5 秒让可能弹出的红框提示充分渲染
+            # ⚡ 点击后，在不刷新页面的前提下，先等待 5 秒让可能弹出的红框提示充分渲染
             sb.sleep(5)
             sb.save_screenshot("icehost_debug_screenshot.png")
             
@@ -136,7 +161,6 @@ def run():
             
             if is_failed_due_to_limit:
                 # 如果点击后页面上弹出了红框，说明“未到可续期时间”（续期未成功）
-                # 此时我们精准拦截：安静退出，绝不发送 Telegram 提醒打扰你！
                 print("点击后，页面立刻弹出了限制提示：说明未到可续期时间（续期未成功）。结束本次运行（不发送 Telegram 提醒）。")
                 return
             
