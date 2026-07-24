@@ -73,13 +73,34 @@ def send_tg_notification(message, photo_path=None):
         except Exception as e:
             print(f"发送 TG 截图异常: {e}")
 
+def build_sb_options():
+    """根据环境变量构造 SeleniumBase 浏览器启动参数。"""
+    options = {"uc": True, "xvfb": True}
+    is_proxy = os.getenv("IS_PROXY", "false").lower() == "true"
+
+    if is_proxy:
+        options["proxy"] = (
+            os.getenv("S5_PROXY")
+            or os.getenv("PROXY_SERVER")
+            or "socks://127.0.0.1:1080"
+        )
+
+    return options
+
+
 def run():
     if not SERVER_URL:
         print("错误: 缺少 ICEHOST_SERVER_URL 环境变量")
         return
 
-    # 1. 启动 SeleniumBase 并开启 UC 免密/防检测模式与 Xvfb 虚拟桌面 (xvfb=True)
-    with SB(uc=True, xvfb=True) as sb:
+    # 1. 启动 SeleniumBase，并按环境变量决定是否启用浏览器代理
+    sb_options = build_sb_options()
+    if "proxy" in sb_options:
+        print("浏览器代理已启用")
+    else:
+        print("浏览器未使用代理，采用直连")
+
+    with SB(**sb_options) as sb:
         print(f"正在访问 IceHost 面板: {SERVER_URL}")
         # 使用 UC 专属重连模式访问，能极大缓解首屏 Cloudflare 阻断
         sb.uc_open_with_reconnect(SERVER_URL, reconnect_time=8)
