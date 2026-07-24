@@ -1,3 +1,4 @@
 .env
 /.tmp/
 /tests/
+/__pycache__/
